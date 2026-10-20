@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#0b0d10">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Object Scanner">
+<title>Phenikaa Object Scanner</title>
+<style>
+  :root{--bg:#0b0d10;--panel:rgba(14,17,22,.84);--line:rgba(255,255,255,.13);--txt:#f2f4f7;--mute:#9aa3ae;--acc:#ff8a1f;--ok:#2fd27a;--warn:#ffcc33}
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none}
+  html,body{height:100%;background:var(--bg);color:var(--txt);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden}
+  #stage{position:fixed;inset:0}
+  video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
+  #roi{position:absolute;left:50%;top:40%;transform:translate(-50%,-50%);border-radius:20px;
+       box-shadow:0 0 0 200vmax rgba(0,0,0,.38);border:3px solid rgba(255,255,255,.9);transition:border-color .2s,width .2s,height .2s}
+  body[data-mode="34"] #roi{width:min(66vw,calc(52vh * .75));aspect-ratio:3/4}
+  body[data-mode="sq"] #roi{width:min(72vw,52vh);aspect-ratio:1}
+  body[data-mode="full"] #roi{display:none}
+  #roi.hit{border-color:var(--ok);box-shadow:0 0 0 200vmax rgba(0,0,0,.38),0 0 24px rgba(47,210,122,.55)}
+  #roi .tag{position:absolute;left:50%;top:-14px;transform:translate(-50%,-100%);white-space:nowrap;background:var(--ok);color:#06210f;
+       font-weight:800;font-size:15px;padding:5px 12px;border-radius:999px;opacity:0;transition:opacity .2s}
+  #roi.hit .tag{opacity:1}
+  #top{position:absolute;top:0;left:0;right:0;padding:calc(env(safe-area-inset-top) + 10px) 12px 10px;display:flex;align-items:center;gap:6px;
+       background:linear-gradient(#000b,#0000)}
+  #top .brand{font-weight:700;flex:1;font-size:15px;min-width:0}
+  #top .brand small{display:block;color:var(--mute);font-weight:500;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chip{border:1px solid var(--line);background:var(--panel);color:var(--txt);border-radius:999px;padding:8px 11px;font-size:13px;font-weight:700;
+        backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);cursor:pointer;flex:none}
+  .chip:active{transform:scale(.95)}
+  .chip.on{background:var(--acc);border-color:var(--acc);color:#111}
+  #torchBtn{display:none}
+  #result{position:absolute;left:10px;right:10px;bottom:calc(env(safe-area-inset-bottom) + 10px);background:var(--panel);border:1px solid var(--line);
+          border-radius:20px;padding:13px 15px 11px;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+  #label{display:flex;align-items:baseline;gap:10px;min-height:40px;flex-wrap:wrap}
+  #vn{font-size:30px;font-weight:800;letter-spacing:-.3px}
+  #en{font-size:15px;color:var(--acc);font-weight:700;font-family:ui-monospace,Menlo,monospace}
+  #label.unsure #vn{color:var(--warn)} #label.unsure #en{color:var(--mute)}
+  #bars{margin-top:9px;display:grid;gap:6px}
+  .bar{display:grid;grid-template-columns:100px 1fr 40px;align-items:center;gap:8px;font-size:12.5px;color:var(--mute)}
+  .bar .t{height:8px;border-radius:9px;background:rgba(255,255,255,.08);overflow:hidden}
+  .bar .f{height:100%;width:0;background:#5d6773;border-radius:9px;transition:width .12s}
+  .bar.top{color:var(--txt);font-weight:700}.bar.top .f{background:var(--acc)}
+  .bar .v{text-align:right;font-variant-numeric:tabular-nums}
+  #meta{margin-top:8px;display:flex;justify-content:space-between;color:var(--mute);font-size:11px;font-variant-numeric:tabular-nums;gap:8px}
+  #hint{position:absolute;left:50%;transform:translateX(-50%);top:calc(env(safe-area-inset-top) + 62px);font-size:12px;color:#fff;
+        background:rgba(0,0,0,.45);padding:5px 11px;border-radius:999px;white-space:nowrap;transition:opacity .6s}
+  #frozen{position:absolute;top:calc(env(safe-area-inset-top) + 62px);left:50%;transform:translateX(-50%);display:none;background:var(--warn);color:#211a00;border-color:var(--warn)}
+  body.paused #frozen{display:block} body.paused #hint{opacity:0}
+  #setup{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:20px;background:var(--bg);z-index:5}
+  #setup .card{max-width:420px;width:100%;background:#13171d;border:1px solid var(--line);border-radius:22px;padding:24px}
+  #setup h1{font-size:22px;margin-bottom:6px}
+  #setup p{color:var(--mute);font-size:14px;margin-bottom:16px}
+  #setup ol{color:var(--mute);font-size:13.5px;padding-left:18px;margin-bottom:18px;display:grid;gap:4px}
+  .btn{display:block;width:100%;text-align:center;border:0;border-radius:14px;padding:14px;font-size:16px;font-weight:700;background:var(--acc);color:#111;cursor:pointer}
+  .btn.sec{background:transparent;color:var(--txt);border:1px solid var(--line);margin-top:10px}
+  #status{margin-top:14px;font-size:13px;color:var(--mute);min-height:18px}
+  #status.err{color:#ff6b6b}
+  input[type=file]{display:none}
+</style>
+</head>
+<body data-mode="34">
+<div id="setup">
+  <div class="card">
+    <h1>Phenikaa Object Scanner</h1>
+    <p>Nhận diện real-time bằng SVM + PCA, chạy trực tiếp trên điện thoại. Lớp: light · switch · emergency light · camera · volume.</p>
+    <ol>
+      <li>Đặt <b>model_web.bin</b> cạnh index.html (hoặc chọn file bên dưới).</li>
+      <li>Bấm <b>Mở camera</b> và cho phép quyền camera.</li>
+      <li>Đưa vật thể vào khung, giữ yên 1–2 giây.</li>
+    </ol>
+    <button class="btn" id="startBtn" style="display:none">Mở camera</button>
+    <label class="btn sec" id="pickBtn"><span>Chọn file model_web.bin</span><input type="file" id="file" accept=".bin,application/octet-stream"></label>
+    <div id="status">Đang tìm model…</div>
+  </div>
+</div>
+
+<div id="stage">
+  <video id="video" playsinline muted autoplay></video>
+  <div id="roi"><div class="tag" id="tag"></div></div>
+  <div id="top">
+    <div class="brand">Object Scanner<small id="modelInfo"></small></div>
+    <button class="chip on" id="modeBtn" title="Đổi khung nhận diện">3:4</button>
+    <button class="chip" id="torchBtn" title="Đèn flash">⚡</button>
+    <button class="chip" id="flipBtn" title="Đổi camera">⟲</button>
+  </div>
+  <div id="hint">Chạm màn hình để dừng / tiếp tục</div>
+  <div class="chip" id="frozen">⏸ Đang dừng — chạm để tiếp tục</div>
+  <div id="result">
+    <div id="label" class="unsure"><span id="vn">Đang khởi động…</span><span id="en"></span></div>
+    <div id="bars"></div>
+    <div id="meta"><span id="fps">— fps</span><span id="lat">— ms</span><span id="mdl">—</span></div>
+  </div>
+</div>
+
+<canvas id="c1" style="display:none"></canvas>
+<canvas id="c2" style="display:none"></canvas>
+
+<script id="core-src" type="text/plain">// ===== SVM + PCA inference core (khớp sklearn: StandardScaler -> PCA(whiten) -> SVC) =====
+function parseModel(buf) {
+  const dv = new DataView(buf);
+  const magic = String.fromCharCode(...new Uint8Array(buf, 0, 4));
+  if (magic !== 'SVMW') throw new Error('File không phải model_web.bin');
+  const jlen = dv.getUint32(4, true);
+  const meta = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 8, jlen)));
+  let off = 8 + jlen; off += (4 - (off % 4)) % 4;
+  const f32 = (n) => { const a = new Float32Array(buf, off, n); off += 4 * n; return a; };
+  const nc = meta.n_comp, D = meta.D, nsv = meta.n_sv, ncls = meta.classes.length;
+  const m = { ...meta };
+  m.wscale = f32(nc); m.bias = f32(nc);
+  m.sv = f32(nsv * nc); m.dual = f32((ncls - 1) * nsv); m.intercept = f32(ncls * (ncls - 1) / 2);
+  m.Wq = new Int8Array(buf, off, nc * D);
+  m.svStart = []; let s = 0; for (const n of meta.n_support) { m.svStart.push(s); s += n; }
+  m.x = new Uint8Array(D);
+  return m;
+}
+
+// RGBA (img_w*img_h*4) -> vector pixel giống lúc train (RGB hoặc xám)
+function toPixels(m, rgba) {
+  const x = m.x, npx = m.img_w * m.img_h;
+  if (m.gray) {
+    for (let i = 0; i < npx; i++) x[i] = (rgba[4*i]*19595 + rgba[4*i+1]*38470 + rgba[4*i+2]*7471 + 0x8000) >> 16;
+  } else {
+    for (let i = 0; i < npx; i++) { x[3*i] = rgba[4*i]; x[3*i+1] = rgba[4*i+1]; x[3*i+2] = rgba[4*i+2]; }
+  }
+  return x;
+}
+
+// Chiếu PCA cho các thành phần k0..k1-1 (để chia việc cho nhiều worker)
+function projectRange(m, x, k0, k1) {
+  const D = m.D, W = m.Wq, out = new Float64Array(k1 - k0);
+  for (let k = k0; k < k1; k++) {
+    const base = k * D; let acc = 0;
+    for (let j = 0; j < D; j++) acc += W[base + j] * x[j];
+    out[k - k0] = acc * m.wscale[k] + m.bias[k];
+  }
+  return out;
+}
+
+function featurize(m, rgba) { return projectRange(m, toPixels(m, rgba), 0, m.n_comp); }
+
+function classify(m, z) {
+  const nc = m.n_comp, ncls = m.classes.length, nsv = m.n_sv;
+  const K = new Float64Array(nsv);
+  for (let s = 0; s < nsv; s++) {
+    const o = s * nc; let v = 0;
+    if (m.kernel === 'rbf') { for (let k = 0; k < nc; k++) { const d = m.sv[o+k] - z[k]; v += d*d; } K[s] = Math.exp(-m.gamma * v); }
+    else { for (let k = 0; k < nc; k++) v += m.sv[o+k] * z[k]; K[s] = v; }
+  }
+  const votes = new Array(ncls).fill(0), conf = new Array(ncls).fill(0);
+  let p = 0;
+  for (let i = 0; i < ncls; i++) for (let j = i + 1; j < ncls; j++) {
+    let d = m.intercept[p];
+    const si = m.svStart[i], sj = m.svStart[j];
+    for (let s = 0; s < m.n_support[i]; s++) d += m.dual[(j-1)*nsv + si + s] * K[si + s];
+    for (let s = 0; s < m.n_support[j]; s++) d += m.dual[i*nsv + sj + s] * K[sj + s];
+    if (d > 0) votes[i]++; else votes[j]++;
+    conf[i] += d; conf[j] -= d; p++;
+  }
+  const ovr = votes.map((v, i) => v + conf[i] / (3 * (Math.abs(conf[i]) + 1)));   // = sklearn 'ovr'
+  let best = 0; for (let i = 1; i < ncls; i++) if (votes[i] > votes[best]) best = i;
+  return { pred: best, votes, ovr };
+}
+
+if (typeof module !== 'undefined') module.exports = { parseModel, toPixels, projectRange, featurize, classify };
+</script>
+<script id="worker-src" type="text/plain">
+let M = null, K0 = 0, K1 = 0;
+onmessage = (e) => {
+  const d = e.data;
+  if (d.type === 'load') {
+    try { M = parseModel(d.buf); K0 = d.k0; K1 = d.k1; postMessage({type:'loaded'}); }
+    catch (err) { postMessage({type:'error', msg:String(err.message || err)}); }
+  } else if (d.type === 'frame' && M) {
+    const out = projectRange(M, toPixels(M, new Uint8ClampedArray(d.px)), K0, K1);
+    postMessage({type:'part', id:d.id, k0:K0, out}, [out.buffer]);
+  }
+};
+</script>
+
+<script>
+const VN = {'light':'Bóng đèn','switch':'Công tắc','emergency light':'Đèn khẩn cấp','camera':'Camera','volume':'Loa'};
+const $ = (id) => document.getElementById(id);
+const video = $('video');
+const CORE_SRC = $('core-src').textContent;
+const core = new Function(CORE_SRC + '\nreturn {parseModel, classify};')();
+const WORKER_URL = URL.createObjectURL(new Blob([CORE_SRC + '\n' + $('worker-src').textContent], {type:'text/javascript'}));
+const NW = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+
+let M = null, workers = [], running = false, busy = false, paused = false, facing = 'environment', stream = null, wakeLock = null;
+let frameId = 0, pending = 0, zbuf = null, tStart = 0;
+let smooth = null, shown = -1, cand = -1, candN = 0, lastT = performance.now(), fpsEMA = 0;
+const ALPHA = 0.35;     // làm mượt điểm số giữa các khung hình
+const HOLD = 3;         // cần 3 khung liên tiếp mới đổi kết quả hiển thị
+const MODES = [['34','3:4'], ['sq','Vuông'], ['full','Toàn khung']];
+let modeIdx = 0;
+
+function setStatus(t, err){ const s = $('status'); s.textContent = t; s.className = err ? 'err' : ''; }
+
+// ---------- Lưu model trong máy (IndexedDB) ----------
+const idb = () => new Promise((res, rej) => { const r = indexedDB.open('svm-scanner', 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('m'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+async function saveModel(buf){ try { const db = await idb(); db.transaction('m','readwrite').objectStore('m').put(buf, 'model'); } catch(e){} }
+async function loadSaved(){ try { const db = await idb(); return await new Promise(r => { const q = db.transaction('m').objectStore('m').get('model'); q.onsuccess = () => r(q.result || null); q.onerror = () => r(null); }); } catch(e){ return null; } }
+
+// ---------- Nạp model: main giữ phần SVM, các worker chia nhau phần PCA ----------
+async function loadModel(buf){
+  M = core.parseModel(buf);
+  workers.forEach(w => w.terminate());
+  const nw = Math.min(NW, M.n_comp);
+  const per = Math.ceil(M.n_comp / nw);
+  workers = [];
+  const ready = [];
+  for (let i = 0; i < nw; i++){
+    const k0 = i * per, k1 = Math.min(M.n_comp, k0 + per);
+    if (k0 >= k1) break;
+    const w = new Worker(WORKER_URL);
+    ready.push(new Promise((res, rej) => { w.onmessage = (e) => e.data.type === 'loaded' ? res() : rej(new Error(e.data.msg)); }));
+    w.postMessage({type:'load', buf: buf.slice(0), k0, k1});
+    workers.push(w);
+  }
+  await Promise.all(ready);
+  workers.forEach(w => w.onmessage = onPart);
+  zbuf = new Float64Array(M.n_comp);
+  buildBars();
+}
+
+function buildBars(){
+  $('bars').innerHTML = M.classes.map((c,i) =>
+    `<div class="bar" id="b${i}"><span>${VN[c]||c}</span><div class="t"><div class="f"></div></div><span class="v">0%</span></div>`).join('');
+  $('modelInfo').textContent = `SVM ${M.kernel} · PCA ${M.n_comp} · ${M.img_w}×${M.img_h} · ${workers.length} luồng`;
+  $('mdl').textContent = `${M.n_sv} support vectors`;
+}
+
+// ---------- Camera ----------
+async function startCamera(){
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = await navigator.mediaDevices.getUserMedia({audio:false,
+    video:{facingMode:{ideal:facing}, width:{ideal:1280}, height:{ideal:720}}});
+  video.srcObject = stream; await video.play();
+  video.style.transform = facing === 'user' ? 'scaleX(-1)' : '';
+  const track = stream.getVideoTracks()[0];
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  $('torchBtn').style.display = caps.torch ? 'block' : 'none';
+  $('torchBtn').classList.remove('on');
+  resetSmooth();
+}
+
+async function keepAwake(){
+  try { if ('wakeLock' in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.onrelease = () => wakeLock = null; } } catch(e){}
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && running) keepAwake(); });
+
+// Vùng ảnh trên video ứng với khung đang thấy trên màn hình
+function sourceRect(){
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (document.body.dataset.mode === 'full') return [0, 0, vw, vh];
+  const rect = video.getBoundingClientRect(), roi = $('roi').getBoundingClientRect();
+  const scale = Math.max(rect.width / vw, rect.height / vh);
+  const ox = (rect.width - vw*scale) / 2, oy = (rect.height - vh*scale) / 2;
+  let sw = roi.width / scale, sh = roi.height / scale;
+  let sx = (roi.left - rect.left - ox) / scale, sy = (roi.top - rect.top - oy) / scale;
+  if (facing === 'user') sx = vw - sx - sw;
+  sw = Math.min(sw, vw); sh = Math.min(sh, vh);
+  sx = Math.max(0, Math.min(vw - sw, sx)); sy = Math.max(0, Math.min(vh - sh, sy));
+  return [sx, sy, sw, sh];
+}
+
+const c1 = $('c1'), c2 = $('c2');
+const x1 = c1.getContext('2d'), x2 = c2.getContext('2d', {willReadFrequently:true});
+function grabFrame(){
+  const W = M.img_w, H = M.img_h, [sx, sy, sw, sh] = sourceRect();
+  const mw = Math.max(W, Math.min(Math.round(sw), W * 2)), mh = Math.max(H, Math.min(Math.round(sh), H * 2));
+  if (c1.width !== mw || c1.height !== mh){ c1.width = mw; c1.height = mh; }
+  if (c2.width !== W || c2.height !== H){ c2.width = W; c2.height = H; }
+  x1.imageSmoothingEnabled = true; x1.imageSmoothingQuality = 'high';
+  x1.drawImage(video, sx, sy, sw, sh, 0, 0, mw, mh);
+  x2.imageSmoothingEnabled = true; x2.imageSmoothingQuality = 'high';
+  x2.drawImage(c1, 0, 0, mw, mh, 0, 0, W, H);
+  return x2.getImageData(0, 0, W, H).data.buffer;
+}
+
+function loop(){
+  if (!running) return;
+  if (!busy && !paused && video.readyState >= 2 && M && document.visibilityState === 'visible'){
+    try {
+      const px = grabFrame();
+      busy = true; pending = workers.length; frameId++; tStart = performance.now();
+      workers.forEach((w, i) => {
+        const b = i === workers.length - 1 ? px : px.slice(0);
+        w.postMessage({type:'frame', id: frameId, px: b}, [b]);
+      });
+    } catch(e){ busy = false; }
+  }
+  requestAnimationFrame(loop);
+}
+
+function onPart(e){
+  const d = e.data; if (d.type !== 'part' || d.id !== frameId) return;
+  zbuf.set(d.out, d.k0);
+  if (--pending > 0) return;
+  const r = core.classify(M, zbuf);
+  busy = false;
+  const now = performance.now(), dt = now - lastT; lastT = now;
+  fpsEMA = fpsEMA ? fpsEMA * 0.85 + (1000 / dt) * 0.15 : 1000 / dt;
+  smooth = smooth ? smooth.map((v, i) => v * (1 - ALPHA) + r.ovr[i] * ALPHA) : r.ovr.slice();
+  render(r, now - tStart);
+}
+
+function resetSmooth(){ smooth = null; shown = -1; cand = -1; candN = 0; }
+
+function render(r, ms){
+  const n = M.classes.length;
+  const ex = smooth.map(v => Math.exp(2.2 * v)), sum = ex.reduce((a, b) => a + b, 0), pr = ex.map(v => v / sum);
+  let best = 0; for (let i = 1; i < n; i++) if (smooth[i] > smooth[best]) best = i;
+  const confident = r.votes[best] === n - 1 && pr[best] > 0.5;
+
+  const target = confident ? best : -2;
+  if (target === cand) candN++; else { cand = target; candN = 1; }
+  if (candN >= HOLD || shown === -1) shown = cand;
+
+  const sure = shown >= 0;
+  const cls = sure ? M.classes[shown] : M.classes[best];
+  $('vn').textContent = sure ? (VN[cls] || cls) : 'Đưa vật thể vào khung…';
+  $('en').textContent = sure ? cls : `có thể: ${VN[cls] || cls}`;
+  $('label').className = sure ? '' : 'unsure';
+  $('roi').classList.toggle('hit', sure);
+  $('tag').textContent = sure ? (VN[cls] || cls) : '';
+  for (let i = 0; i < n; i++){
+    const b = $('b' + i); b.classList.toggle('top', i === best);
+    b.querySelector('.f').style.width = (pr[i] * 100).toFixed(1) + '%';
+    b.querySelector('.v').textContent = Math.round(pr[i] * 100) + '%';
+  }
+  $('fps').textContent = fpsEMA.toFixed(1) + ' fps';
+  $('lat').textContent = ms.toFixed(0) + ' ms/khung';
+}
+
+async function go(){
+  try {
+    setStatus('Đang mở camera…');
+    await startCamera();
+    $('setup').style.display = 'none';
+    running = true; keepAwake(); requestAnimationFrame(loop);
+    setTimeout(() => $('hint').style.opacity = 0, 4000);
+  } catch(e){
+    setStatus('Không mở được camera: ' + e.message + '. Hãy mở bằng link https:// (GitHub Pages) và cho phép quyền camera.', true);
+  }
+}
+
+function togglePause(){
+  paused = !paused;
+  document.body.classList.toggle('paused', paused);
+  paused ? video.pause() : video.play();
+}
+
+// ---------- Nút bấm ----------
+$('file').addEventListener('change', async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  try { setStatus('Đang nạp model…'); const buf = await f.arrayBuffer(); await loadModel(buf.slice(0)); saveModel(buf); afterLoad('Đã nạp model'); go(); }
+  catch(err){ setStatus('Lỗi model: ' + err.message, true); }
+});
+$('startBtn').onclick = go;
+$('modeBtn').onclick = (e) => { e.stopPropagation(); modeIdx = (modeIdx + 1) % MODES.length;
+  document.body.dataset.mode = MODES[modeIdx][0]; $('modeBtn').textContent = MODES[modeIdx][1];
+  $('modeBtn').classList.toggle('on', MODES[modeIdx][0] !== 'full'); resetSmooth(); };
+$('flipBtn').onclick = async (e) => { e.stopPropagation(); facing = facing === 'environment' ? 'user' : 'environment'; try { await startCamera(); } catch(err){} };
+$('torchBtn').onclick = async (e) => { e.stopPropagation();
+  const t = stream && stream.getVideoTracks()[0]; if (!t) return;
+  const on = !$('torchBtn').classList.contains('on');
+  try { await t.applyConstraints({advanced:[{torch:on}]}); $('torchBtn').classList.toggle('on', on); } catch(err){} };
+$('stage').addEventListener('click', (e) => { if (e.target.closest('#top')) return; togglePause(); });
+
+function afterLoad(msg){ setStatus(msg + ' · ' + M.classes.length + ' lớp'); $('startBtn').style.display = 'block'; $('pickBtn').firstElementChild.textContent = 'Chọn model khác'; }
+
+(async () => {
+  try {
+    const r = await fetch('model_web.bin', {cache:'no-cache'});
+    if (r.ok){ setStatus('Đang nạp model_web.bin…'); await loadModel(await r.arrayBuffer()); afterLoad('Đã nạp model'); return; }
+  } catch(e){}
+  const saved = await loadSaved();
+  if (saved){ try { await loadModel(saved); afterLoad('Đã nạp model đã lưu'); return; } catch(e){} }
+  setStatus('Chưa có model — hãy chọn file model_web.bin');
+})();
+</script>
+</body>
+</html>
