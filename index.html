@@ -39,6 +39,7 @@
   #vn{font-size:30px;font-weight:800;letter-spacing:-.3px}
   #en{font-size:15px;color:var(--acc);font-weight:700;font-family:ui-monospace,Menlo,monospace}
   #label.unsure #vn{color:var(--warn)} #label.unsure #en{color:var(--mute)}
+  #label.none #vn{color:var(--mute)} #label.none #en{color:var(--mute)}
   #bars{margin-top:9px;display:grid;gap:6px}
   .bar{display:grid;grid-template-columns:100px 1fr 40px;align-items:center;gap:8px;font-size:12.5px;color:var(--mute)}
   .bar .t{height:8px;border-radius:9px;background:rgba(255,255,255,.08);overflow:hidden}
@@ -66,7 +67,7 @@
 <div id="setup">
   <div class="card">
     <h1>Phenikaa Object Scanner</h1>
-    <p>Nhận diện real-time bằng SVM + PCA, chạy trực tiếp trên điện thoại. Lớp: light · switch · emergency light · camera · volume.</p>
+    <p>Nhận diện real-time bằng SVM + PCA, chạy trực tiếp trên điện thoại. Lớp: light · switch · emergency light · camera · volume · none.</p>
     <ol>
       <li>Đặt <b>model_web.bin</b> cạnh index.html (hoặc chọn file bên dưới).</li>
       <li>Bấm <b>Mở camera</b> và cho phép quyền camera.</li>
@@ -90,7 +91,7 @@
   <div id="hint">Chạm màn hình để dừng / tiếp tục</div>
   <div class="chip" id="frozen">⏸ Đang dừng — chạm để tiếp tục</div>
   <div id="result">
-    <div id="label" class="unsure"><span id="vn">Đang khởi động…</span><span id="en"></span></div>
+    <div id="label" class="none"><span id="vn">Đang khởi động…</span><span id="en"></span></div>
     <div id="bars"></div>
     <div id="meta"><span id="fps">— fps</span><span id="lat">— ms</span><span id="mdl">—</span></div>
   </div>
@@ -182,7 +183,7 @@ onmessage = (e) => {
 </script>
 
 <script>
-const VN = {'light':'Bóng đèn','switch':'Công tắc','emergency light':'Đèn khẩn cấp','camera':'Camera','volume':'Loa'};
+const VN = {'light':'Bóng đèn','switch':'Công tắc','emergency light':'Đèn khẩn cấp','camera':'Camera','volume':'Loa','none':'Không có vật thể'};
 const $ = (id) => document.getElementById(id);
 const video = $('video');
 const CORE_SRC = $('core-src').textContent;
@@ -195,6 +196,7 @@ let frameId = 0, pending = 0, zbuf = null, tStart = 0;
 let smooth = null, shown = -1, cand = -1, candN = 0, lastT = performance.now(), fpsEMA = 0;
 const ALPHA = 0.35;     // làm mượt điểm số giữa các khung hình
 const HOLD = 3;         // cần 3 khung liên tiếp mới đổi kết quả hiển thị
+const THRESH = 0.60;    // độ tin cậy tối thiểu; thấp hơn => none (không phải 5 vật thể)
 const MODES = [['34','3:4'], ['sq','Vuông'], ['full','Toàn khung']];
 let modeIdx = 0;
 
@@ -208,7 +210,7 @@ async function loadSaved(){ try { const db = await idb(); return await new Promi
 
 // ---------- Nạp model: main giữ phần SVM, các worker chia nhau phần PCA ----------
 async function loadModel(buf){
-  M = core.parseModel(buf);
+  M = core.parseModel(buf);                       // báo lỗi ngay nếu file sai
   workers.forEach(w => w.terminate());
   const nw = Math.min(NW, M.n_comp);
   const per = Math.ceil(M.n_comp / nw);
@@ -259,7 +261,7 @@ function sourceRect(){
   const vw = video.videoWidth, vh = video.videoHeight;
   if (document.body.dataset.mode === 'full') return [0, 0, vw, vh];
   const rect = video.getBoundingClientRect(), roi = $('roi').getBoundingClientRect();
-  const scale = Math.max(rect.width / vw, rect.height / vh);
+  const scale = Math.max(rect.width / vw, rect.height / vh);          // object-fit: cover
   const ox = (rect.width - vw*scale) / 2, oy = (rect.height - vh*scale) / 2;
   let sw = roi.width / scale, sh = roi.height / scale;
   let sx = (roi.left - rect.left - ox) / scale, sy = (roi.top - rect.top - oy) / scale;
@@ -273,6 +275,7 @@ const c1 = $('c1'), c2 = $('c2');
 const x1 = c1.getContext('2d'), x2 = c2.getContext('2d', {willReadFrequently:true});
 function grabFrame(){
   const W = M.img_w, H = M.img_h, [sx, sy, sw, sh] = sourceRect();
+  // Ép vùng chọn về W×H (giống resize ảnh lúc train), thu nhỏ 2 bước cho mượt
   const mw = Math.max(W, Math.min(Math.round(sw), W * 2)), mh = Math.max(H, Math.min(Math.round(sh), H * 2));
   if (c1.width !== mw || c1.height !== mh){ c1.width = mw; c1.height = mh; }
   if (c2.width !== W || c2.height !== H){ c2.width = W; c2.height = H; }
@@ -316,17 +319,19 @@ function render(r, ms){
   const n = M.classes.length;
   const ex = smooth.map(v => Math.exp(2.2 * v)), sum = ex.reduce((a, b) => a + b, 0), pr = ex.map(v => v / sum);
   let best = 0; for (let i = 1; i < n; i++) if (smooth[i] > smooth[best]) best = i;
-  const confident = r.votes[best] === n - 1 && pr[best] > 0.5;
+  const confident = r.votes[best] === n - 1 && pr[best] > THRESH && M.classes[best] !== 'none';
 
+  // chống nhấp nháy: chỉ đổi kết quả khi ổn định HOLD khung liên tiếp
   const target = confident ? best : -2;
   if (target === cand) candN++; else { cand = target; candN = 1; }
   if (candN >= HOLD || shown === -1) shown = cand;
 
+  // Không đủ tin cậy (hoặc model đoán 'none') => hiển thị none
   const sure = shown >= 0;
-  const cls = sure ? M.classes[shown] : M.classes[best];
-  $('vn').textContent = sure ? (VN[cls] || cls) : 'Đưa vật thể vào khung…';
-  $('en').textContent = sure ? cls : `có thể: ${VN[cls] || cls}`;
-  $('label').className = sure ? '' : 'unsure';
+  const cls = sure ? M.classes[shown] : 'none';
+  $('vn').textContent = sure ? (VN[cls] || cls) : 'Không có vật thể';
+  $('en').textContent = cls;
+  $('label').className = sure ? '' : 'none';
   $('roi').classList.toggle('hit', sure);
   $('tag').textContent = sure ? (VN[cls] || cls) : '';
   for (let i = 0; i < n; i++){
@@ -376,11 +381,11 @@ $('stage').addEventListener('click', (e) => { if (e.target.closest('#top')) retu
 function afterLoad(msg){ setStatus(msg + ' · ' + M.classes.length + ' lớp'); $('startBtn').style.display = 'block'; $('pickBtn').firstElementChild.textContent = 'Chọn model khác'; }
 
 (async () => {
-  try {
+  try {   // 1) model_web.bin nằm cạnh index.html
     const r = await fetch('model_web.bin', {cache:'no-cache'});
     if (r.ok){ setStatus('Đang nạp model_web.bin…'); await loadModel(await r.arrayBuffer()); afterLoad('Đã nạp model'); return; }
   } catch(e){}
-  const saved = await loadSaved();
+  const saved = await loadSaved();   // 2) model đã chọn lần trước
   if (saved){ try { await loadModel(saved); afterLoad('Đã nạp model đã lưu'); return; } catch(e){} }
   setStatus('Chưa có model — hãy chọn file model_web.bin');
 })();
