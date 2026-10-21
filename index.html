@@ -33,6 +33,15 @@
   .chip:active{transform:scale(.95)}
   .chip.on{background:var(--acc);border-color:var(--acc);color:#111}
   #torchBtn{display:none}
+  body[data-mode="far"] #roi{display:none}
+  #det{position:absolute;border:3px solid var(--ok);border-radius:12px;display:none;box-shadow:0 0 18px rgba(47,210,122,.6);transition:all .12s}
+  #det .tag{position:absolute;left:-3px;top:-3px;transform:translateY(-100%);background:var(--ok);color:#06210f;font-weight:800;font-size:14px;padding:3px 9px;border-radius:8px;white-space:nowrap}
+  #scanArea{position:absolute;left:4%;right:4%;top:calc(env(safe-area-inset-top) + 64px);border:2px dashed rgba(255,255,255,.35);border-radius:16px;display:none;pointer-events:none}
+  body[data-mode="far"] #scanArea{display:block}
+  #thumb{position:absolute;right:12px;top:calc(env(safe-area-inset-top) + 60px);width:64px;height:64px;border-radius:10px;border:2px solid rgba(255,255,255,.8);background:#000}
+  #thumbLbl{position:absolute;right:12px;top:calc(env(safe-area-inset-top) + 128px);width:64px;text-align:center;font-size:10px;color:#fff;text-shadow:0 1px 2px #000}
+  #photoView{position:absolute;inset:0;background:#000;display:none;object-fit:contain;width:100%;height:100%}
+  body.photo #photoView{display:block} body.photo #roi{display:none}
   #result{position:absolute;left:10px;right:10px;bottom:calc(env(safe-area-inset-bottom) + 10px);background:var(--panel);border:1px solid var(--line);
           border-radius:20px;padding:13px 15px 11px;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
   #label{display:flex;align-items:baseline;gap:10px;min-height:40px;flex-wrap:wrap}
@@ -67,11 +76,11 @@
 <div id="setup">
   <div class="card">
     <h1>Phenikaa Object Scanner</h1>
-    <p>Nhận diện real-time bằng SVM + PCA, chạy trực tiếp trên điện thoại. Lớp: light · switch · emergency light · camera · volume · none.</p>
+    <p>Nhận diện real-time bằng SVM + PCA, chạy trực tiếp trên điện thoại. Lớp: light · switch · emergency light · camera · volume · unknown.</p>
     <ol>
       <li>Đặt <b>model_web.bin</b> cạnh index.html (hoặc chọn file bên dưới).</li>
       <li>Bấm <b>Mở camera</b> và cho phép quyền camera.</li>
-      <li>Đưa vật thể vào khung, giữ yên 1–2 giây.</li>
+      <li>Đưa vật thể vào khung, giữ yên 1–2 giây. Nút 🖼 thử với 1 ảnh có sẵn; chế độ <b>Quét xa</b> tự tìm vật nhỏ và vẽ khung.</li>
     </ol>
     <button class="btn" id="startBtn" style="display:none">Mở camera</button>
     <label class="btn sec" id="pickBtn"><span>Chọn file model_web.bin</span><input type="file" id="file" accept=".bin,application/octet-stream"></label>
@@ -81,12 +90,17 @@
 
 <div id="stage">
   <video id="video" playsinline muted autoplay></video>
+  <canvas id="photoView"></canvas>
   <div id="roi"><div class="tag" id="tag"></div></div>
+  <div id="scanArea"></div>
+  <div id="det"><div class="tag" id="detTag"></div></div>
+  <canvas id="thumb" width="64" height="64"></canvas><div id="thumbLbl">model thấy</div>
   <div id="top">
     <div class="brand">Object Scanner<small id="modelInfo"></small></div>
     <button class="chip on" id="modeBtn" title="Đổi khung nhận diện">3:4</button>
     <button class="chip" id="torchBtn" title="Đèn flash">⚡</button>
     <button class="chip" id="flipBtn" title="Đổi camera">⟲</button>
+    <label class="chip" id="photoBtn" title="Thử với 1 ảnh trong máy">🖼<input type="file" id="photoFile" accept="image/*"></label>
   </div>
   <div id="hint">Chạm màn hình để dừng / tiếp tục</div>
   <div class="chip" id="frozen">⏸ Đang dừng — chạm để tiếp tục</div>
@@ -116,6 +130,7 @@ function parseModel(buf) {
   m.Wq = new Int8Array(buf, off, nc * D);
   m.svStart = []; let s = 0; for (const n of meta.n_support) { m.svStart.push(s); s += n; }
   m.x = new Uint8Array(D);
+  m.xf = new Float32Array(D);
   return m;
 }
 
@@ -127,7 +142,13 @@ function toPixels(m, rgba) {
   } else {
     for (let i = 0; i < npx; i++) { x[3*i] = rgba[4*i]; x[3*i+1] = rgba[4*i+1]; x[3*i+2] = rgba[4*i+2]; }
   }
-  return x;
+  if (!m.norm) return x;
+  // Chuẩn hóa từng ảnh: trừ trung bình, chia độ lệch chuẩn (bỏ khác biệt sáng/tối, tương phản)
+  const D = m.D, xf = m.xf; let s = 0, s2 = 0;
+  for (let j = 0; j < D; j++) { const v = x[j]; s += v; s2 += v * v; }
+  const mean = s / D, sd = Math.sqrt(Math.max(s2 / D - mean * mean, 0)) + 1e-6;
+  for (let j = 0; j < D; j++) xf[j] = (x[j] - mean) / sd;
+  return xf;
 }
 
 // Chiếu PCA cho các thành phần k0..k1-1 (để chia việc cho nhiều worker)
@@ -176,14 +197,16 @@ onmessage = (e) => {
     try { M = parseModel(d.buf); K0 = d.k0; K1 = d.k1; postMessage({type:'loaded'}); }
     catch (err) { postMessage({type:'error', msg:String(err.message || err)}); }
   } else if (d.type === 'frame' && M) {
-    const out = projectRange(M, toPixels(M, new Uint8ClampedArray(d.px)), K0, K1);
-    postMessage({type:'part', id:d.id, k0:K0, out}, [out.buffer]);
+    const nk = K1 - K0, nwin = d.px.length, out = new Float64Array(nwin * nk);
+    for (let w = 0; w < nwin; w++)
+      out.set(projectRange(M, toPixels(M, new Uint8ClampedArray(d.px[w])), K0, K1), w * nk);
+    postMessage({type:'part', id:d.id, k0:K0, nk, nwin, out}, [out.buffer]);
   }
 };
 </script>
 
 <script>
-const VN = {'light':'Bóng đèn','switch':'Công tắc','emergency light':'Đèn khẩn cấp','camera':'Camera','volume':'Loa','none':'Không có vật thể'};
+const VN = {'light':'Bóng đèn','switch':'Công tắc','emergency light':'Đèn khẩn cấp','camera':'Camera','volume':'Loa','none':'unknown','unknown':'unknown'};
 const $ = (id) => document.getElementById(id);
 const video = $('video');
 const CORE_SRC = $('core-src').textContent;
@@ -196,8 +219,9 @@ let frameId = 0, pending = 0, zbuf = null, tStart = 0;
 let smooth = null, shown = -1, cand = -1, candN = 0, lastT = performance.now(), fpsEMA = 0;
 const ALPHA = 0.35;     // làm mượt điểm số giữa các khung hình
 const HOLD = 3;         // cần 3 khung liên tiếp mới đổi kết quả hiển thị
-const THRESH = 0.60;    // độ tin cậy tối thiểu; thấp hơn => none (không phải 5 vật thể)
-const MODES = [['34','3:4'], ['sq','Vuông'], ['full','Toàn khung']];
+const THRESH = 0.60;    // độ tin cậy tối thiểu; thấp hơn => unknown (không phải 5 vật thể)
+const UNKNOWN = 'unknown';
+const MODES = [['34','3:4'], ['sq','Vuông'], ['full','Toàn khung'], ['far','Quét xa']];
 let modeIdx = 0;
 
 function setStatus(t, err){ const s = $('status'); s.textContent = t; s.className = err ? 'err' : ''; }
@@ -230,10 +254,13 @@ async function loadModel(buf){
   buildBars();
 }
 
+let hasUnkClass = false;
 function buildBars(){
+  hasUnkClass = M.classes.some(c => c === 'none' || c === UNKNOWN);
   $('bars').innerHTML = M.classes.map((c,i) =>
-    `<div class="bar" id="b${i}"><span>${VN[c]||c}</span><div class="t"><div class="f"></div></div><span class="v">0%</span></div>`).join('');
-  $('modelInfo').textContent = `SVM ${M.kernel} · PCA ${M.n_comp} · ${M.img_w}×${M.img_h} · ${workers.length} luồng`;
+    `<div class="bar" id="b${i}"><span>${VN[c]||c}</span><div class="t"><div class="f"></div></div><span class="v">0%</span></div>`).join('')
+    + (hasUnkClass ? '' : `<div class="bar" id="bunk"><span>unknown</span><div class="t"><div class="f"></div></div><span class="v">0%</span></div>`);
+  $('modelInfo').textContent = `SVM ${M.kernel} · PCA ${M.n_comp} · ${M.img_w}×${M.img_h}${M.norm ? ' · chuẩn hóa' : ''} · ${workers.length} luồng`;
   $('mdl').textContent = `${M.n_sv} support vectors`;
 }
 
@@ -283,6 +310,85 @@ function grabFrame(){
   x1.drawImage(video, sx, sy, sw, sh, 0, 0, mw, mh);
   x2.imageSmoothingEnabled = true; x2.imageSmoothingQuality = 'high';
   x2.drawImage(c1, 0, 0, mw, mh, 0, 0, W, H);
+  thumbCtx.drawImage(c2, 0, 0, 64, 64);
+  return x2.getImageData(0, 0, W, H).data.buffer;
+}
+
+// ---------- Thử với 1 ảnh: xử lý y hệt lúc train (cả ảnh ép về W×H) ----------
+const thumbCtx = $('thumb').getContext('2d');
+function imageToPixels(src, iw, ih){
+  const W = M.img_w, H = M.img_h;
+  // thu nhỏ dần từng nửa (gần giống cv2 INTER_AREA)
+  let cur = src, cw = iw, ch = ih;
+  while (cw / 2 >= W && ch / 2 >= H){
+    const t = document.createElement('canvas'); t.width = Math.round(cw / 2); t.height = Math.round(ch / 2);
+    const tc = t.getContext('2d'); tc.imageSmoothingEnabled = true; tc.imageSmoothingQuality = 'high';
+    tc.drawImage(cur, 0, 0, cw, ch, 0, 0, t.width, t.height); cur = t; cw = t.width; ch = t.height;
+  }
+  c2.width = W; c2.height = H; x2.imageSmoothingEnabled = true; x2.imageSmoothingQuality = 'high';
+  x2.drawImage(cur, 0, 0, cw, ch, 0, 0, W, H);
+  thumbCtx.drawImage(c2, 0, 0, 64, 64);
+  return x2.getImageData(0, 0, W, H).data.buffer;
+}
+function runOnce(px){
+  return new Promise(res => {
+    const orig = onPartDone; onPartDone = (r, ms) => { onPartDone = orig; res([r, ms]); };
+    windows = []; busy = true; pending = workers.length; frameId++; tStart = performance.now();
+    workers.forEach((w, i) => { const b = i === workers.length - 1 ? px : px.slice(0); w.postMessage({type:'frame', id: frameId, px: [b]}, [b]); });
+  });
+}
+async function testPhoto(file){
+  const bmp = await createImageBitmap(file);            // tự xoay theo EXIF
+  paused = true; document.body.classList.add('paused', 'photo');
+  const pv = $('photoView'); pv.width = bmp.width; pv.height = bmp.height; pv.getContext('2d').drawImage(bmp, 0, 0);
+  const px = imageToPixels(bmp, bmp.width, bmp.height);
+  const [r, ms] = await runOnce(px);
+  resetSmooth(); smooth = r.ovr.slice(); shown = -1; cand = -1;
+  for (let k = 0; k < HOLD; k++) render(r, ms);         // hiển thị ngay, không làm mượt
+  $('frozen').textContent = '🖼 Kết quả với ảnh — chạm để quay lại camera';
+}
+
+// ---------- Quét xa: cửa sổ trượt nhiều kích cỡ trên vùng quét ----------
+function scanRect(){   // vùng quét (toạ độ màn hình) = khung nét đứt
+  const a = $('scanArea').getBoundingClientRect(), r = $('result').getBoundingClientRect();
+  return {left: a.left, top: a.top, width: a.width, height: Math.max(100, r.top - 12 - a.top)};
+}
+function layoutScan(){ const s = scanRect(); const el = $('scanArea'); el.style.height = s.height + 'px'; }
+window.addEventListener('resize', layoutScan);
+let windows = [], winTex = [];    // các cửa sổ (toạ độ màn hình) + độ chi tiết của từng cửa sổ
+const MIN_TEX = 14;                // cửa sổ trơn (độ lệch chuẩn độ sáng < 14) => bỏ qua
+function texture(buf){             // độ lệch chuẩn độ sáng, lấy mẫu thưa cho nhanh
+  const a = new Uint8ClampedArray(buf); let s = 0, s2 = 0, k = 0;
+  for (let i = 0; i < a.length; i += 4 * 37){ const v = (a[i] * 3 + a[i+1] * 6 + a[i+2]) / 10; s += v; s2 += v * v; k++; }
+  const m = s / k; return Math.sqrt(Math.max(s2 / k - m * m, 0));
+}
+function makeWindows(){
+  const R = scanRect(), out = [{x: R.left, y: R.top, w: R.width, h: R.height}];
+  for (const [n, f] of [[2, 0.6], [3, 0.42]]){           // lưới 2x2 (60%) và 3x3 (42%)
+    const w = R.width * f, h = R.height * f;
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++)
+      out.push({x: R.left + (R.width - w) * (n === 1 ? 0.5 : j / (n - 1)), y: R.top + (R.height - h) * (n === 1 ? 0.5 : i / (n - 1)), w, h});
+  }
+  return out;
+}
+function screenToVideo(b){   // đổi toạ độ màn hình -> toạ độ trong video (object-fit: cover)
+  const vw = video.videoWidth, vh = video.videoHeight, rect = video.getBoundingClientRect();
+  const scale = Math.max(rect.width / vw, rect.height / vh);
+  const ox = (rect.width - vw * scale) / 2, oy = (rect.height - vh * scale) / 2;
+  let sx = (b.x - rect.left - ox) / scale, sy = (b.y - rect.top - oy) / scale, sw = b.w / scale, sh = b.h / scale;
+  if (facing === 'user') sx = vw - sx - sw;
+  sw = Math.min(sw, vw); sh = Math.min(sh, vh);
+  return [Math.max(0, Math.min(vw - sw, sx)), Math.max(0, Math.min(vh - sh, sy)), sw, sh];
+}
+function grabRect(sx, sy, sw, sh, src){
+  const W = M.img_w, H = M.img_h;
+  const mw = Math.max(W, Math.min(Math.round(sw), W * 2)), mh = Math.max(H, Math.min(Math.round(sh), H * 2));
+  if (c1.width !== mw || c1.height !== mh){ c1.width = mw; c1.height = mh; }
+  if (c2.width !== W || c2.height !== H){ c2.width = W; c2.height = H; }
+  x1.imageSmoothingEnabled = true; x1.imageSmoothingQuality = 'high';
+  x1.drawImage(src, sx, sy, sw, sh, 0, 0, mw, mh);
+  x2.imageSmoothingEnabled = true; x2.imageSmoothingQuality = 'high';
+  x2.drawImage(c1, 0, 0, mw, mh, 0, 0, W, H);
   return x2.getImageData(0, 0, W, H).data.buffer;
 }
 
@@ -290,28 +396,53 @@ function loop(){
   if (!running) return;
   if (!busy && !paused && video.readyState >= 2 && M && document.visibilityState === 'visible'){
     try {
-      const px = grabFrame();
+      let list;
+      if (document.body.dataset.mode === 'far'){
+        windows = makeWindows();
+        list = windows.map(b => grabRect(...screenToVideo(b), video));
+        winTex = list.map(texture);
+      } else {
+        windows = []; list = [grabFrame()];
+      }
       busy = true; pending = workers.length; frameId++; tStart = performance.now();
       workers.forEach((w, i) => {
-        const b = i === workers.length - 1 ? px : px.slice(0);
-        w.postMessage({type:'frame', id: frameId, px: b}, [b]);
+        const bufs = i === workers.length - 1 ? list : list.map(p => p.slice(0));
+        w.postMessage({type:'frame', id: frameId, px: bufs}, bufs);
       });
     } catch(e){ busy = false; }
   }
   requestAnimationFrame(loop);
 }
 
+let zwin = null, nwinCur = 0, bestBox = null;
 function onPart(e){
   const d = e.data; if (d.type !== 'part' || d.id !== frameId) return;
-  zbuf.set(d.out, d.k0);
+  if (!zwin || nwinCur !== d.nwin){ zwin = Array.from({length: d.nwin}, () => new Float64Array(M.n_comp)); nwinCur = d.nwin; }
+  for (let w = 0; w < d.nwin; w++) zwin[w].set(d.out.subarray(w * d.nk, (w + 1) * d.nk), d.k0);
   if (--pending > 0) return;
-  const r = core.classify(M, zbuf);
   busy = false;
+  // phân loại từng cửa sổ, chọn cửa sổ chắc chắn nhất (lớp thắng tất cả các cặp, độ tin cậy cao nhất)
+  const n = M.classes.length, rs = zwin.map(z => core.classify(M, z));
+  // Quét xa: chọn ô (không trơn) mà SVM chắc chắn nhất
+  let pick = -1, pickConf = THRESH;
+  rs.forEach((r, w) => {
+    const c = r.pred;
+    if (r.votes[c] !== n - 1 || ['none', UNKNOWN].includes(M.classes[c])) return;
+    if (rs.length > 1 && winTex[w] < MIN_TEX) return;                 // bỏ ô trơn (tường, nền)
+    const ex = r.ovr.map(v => Math.exp(2.2 * v)), conf = ex[c] / ex.reduce((a, b) => a + b, 0);
+    if (conf > pickConf){ pickConf = conf; pick = w; }
+  });
+  const r = pick >= 0 ? rs[pick] : {pred: 0, votes: new Array(n).fill(0), ovr: new Array(n).fill(0)};
+  if (pick < 0) pick = 0;
+  bestBox = rs.length === 1 ? null : pick;
+  onPartDone(r, performance.now() - tStart);
+}
+let onPartDone = (r, msDone) => {
   const now = performance.now(), dt = now - lastT; lastT = now;
   fpsEMA = fpsEMA ? fpsEMA * 0.85 + (1000 / dt) * 0.15 : 1000 / dt;
   smooth = smooth ? smooth.map((v, i) => v * (1 - ALPHA) + r.ovr[i] * ALPHA) : r.ovr.slice();
-  render(r, now - tStart);
-}
+  render(r, msDone);
+};
 
 function resetSmooth(){ smooth = null; shown = -1; cand = -1; candN = 0; }
 
@@ -319,25 +450,39 @@ function render(r, ms){
   const n = M.classes.length;
   const ex = smooth.map(v => Math.exp(2.2 * v)), sum = ex.reduce((a, b) => a + b, 0), pr = ex.map(v => v / sum);
   let best = 0; for (let i = 1; i < n; i++) if (smooth[i] > smooth[best]) best = i;
-  const confident = r.votes[best] === n - 1 && pr[best] > THRESH && M.classes[best] !== 'none';
+  const confident = r.votes[best] === n - 1 && pr[best] > THRESH && !['none', UNKNOWN].includes(M.classes[best]);
 
   // chống nhấp nháy: chỉ đổi kết quả khi ổn định HOLD khung liên tiếp
   const target = confident ? best : -2;
   if (target === cand) candN++; else { cand = target; candN = 1; }
   if (candN >= HOLD || shown === -1) shown = cand;
 
-  // Không đủ tin cậy (hoặc model đoán 'none') => hiển thị none
+  // Không đủ tin cậy => unknown (không phải 5 vật thể)
   const sure = shown >= 0;
-  const cls = sure ? M.classes[shown] : 'none';
-  $('vn').textContent = sure ? (VN[cls] || cls) : 'Không có vật thể';
-  $('en').textContent = cls;
+  const cls = sure ? M.classes[shown] : UNKNOWN;
+  $('vn').textContent = sure ? (VN[cls] || cls) : 'unknown';
+  $('en').textContent = sure ? cls : '';
   $('label').className = sure ? '' : 'none';
   $('roi').classList.toggle('hit', sure);
   $('tag').textContent = sure ? (VN[cls] || cls) : '';
+  const det = $('det');
+  if (sure && bestBox !== null && windows[bestBox] && document.body.dataset.mode === 'far'){
+    const bx = windows[bestBox];
+    Object.assign(det.style, {display: 'block', left: bx.x + 'px', top: bx.y + 'px', width: bx.w + 'px', height: bx.h + 'px'});
+    $('detTag').textContent = (VN[cls] || cls) + ' · ' + cls;
+  } else det.style.display = 'none';
+  // Dòng "unknown": mức độ không chắc chắn; 5 lớp kia chia phần còn lại
+  const unk = hasUnkClass ? 0 : (sure ? Math.max(0, 1 - pr[best]) * 0.5 : Math.max(1 - pr[best], 0.5));
   for (let i = 0; i < n; i++){
-    const b = $('b' + i); b.classList.toggle('top', i === best);
-    b.querySelector('.f').style.width = (pr[i] * 100).toFixed(1) + '%';
-    b.querySelector('.v').textContent = Math.round(pr[i] * 100) + '%';
+    const v = pr[i] * (1 - unk);
+    const b = $('b' + i); b.classList.toggle('top', sure && i === best);
+    b.querySelector('.f').style.width = (v * 100).toFixed(1) + '%';
+    b.querySelector('.v').textContent = Math.round(v * 100) + '%';
+  }
+  if (!hasUnkClass){
+    const b = $('bunk'); b.classList.toggle('top', !sure);
+    b.querySelector('.f').style.width = (unk * 100).toFixed(1) + '%';
+    b.querySelector('.v').textContent = Math.round(unk * 100) + '%';
   }
   $('fps').textContent = fpsEMA.toFixed(1) + ' fps';
   $('lat').textContent = ms.toFixed(0) + ' ms/khung';
@@ -348,7 +493,7 @@ async function go(){
     setStatus('Đang mở camera…');
     await startCamera();
     $('setup').style.display = 'none';
-    running = true; keepAwake(); requestAnimationFrame(loop);
+    running = true; keepAwake(); layoutScan(); requestAnimationFrame(loop);
     setTimeout(() => $('hint').style.opacity = 0, 4000);
   } catch(e){
     setStatus('Không mở được camera: ' + e.message + '. Hãy mở bằng link https:// (GitHub Pages) và cho phép quyền camera.', true);
@@ -356,6 +501,9 @@ async function go(){
 }
 
 function togglePause(){
+  if (document.body.classList.contains('photo')){
+    document.body.classList.remove('photo'); $('frozen').textContent = '⏸ Đang dừng — chạm để tiếp tục'; resetSmooth();
+  }
   paused = !paused;
   document.body.classList.toggle('paused', paused);
   paused ? video.pause() : video.play();
@@ -368,9 +516,11 @@ $('file').addEventListener('change', async (e) => {
   catch(err){ setStatus('Lỗi model: ' + err.message, true); }
 });
 $('startBtn').onclick = go;
+$('photoBtn').addEventListener('click', (e) => e.stopPropagation());
+$('photoFile').addEventListener('change', async (e) => { const f = e.target.files[0]; e.target.value = ''; if (f && M) { try { await testPhoto(f); } catch(err){ alert('Không đọc được ảnh: ' + err.message); } } });
 $('modeBtn').onclick = (e) => { e.stopPropagation(); modeIdx = (modeIdx + 1) % MODES.length;
   document.body.dataset.mode = MODES[modeIdx][0]; $('modeBtn').textContent = MODES[modeIdx][1];
-  $('modeBtn').classList.toggle('on', MODES[modeIdx][0] !== 'full'); resetSmooth(); };
+  $('modeBtn').classList.toggle('on', MODES[modeIdx][0] !== 'full'); $('det').style.display = 'none'; resetSmooth(); };
 $('flipBtn').onclick = async (e) => { e.stopPropagation(); facing = facing === 'environment' ? 'user' : 'environment'; try { await startCamera(); } catch(err){} };
 $('torchBtn').onclick = async (e) => { e.stopPropagation();
   const t = stream && stream.getVideoTracks()[0]; if (!t) return;
